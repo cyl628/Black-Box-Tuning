@@ -3,6 +3,10 @@ from fastNLP import DataSet, Instance
 from fastNLP.io import Loader, DataBundle
 from functools import partial
 from transformers import RobertaTokenizer
+import os
+import json
+import pandas as pd
+import csv
 
 
 def convert_to_features(example_batch, tokenizer):
@@ -22,6 +26,10 @@ def convert_to_features(example_batch, tokenizer):
 
 
 class SST2Loader(Loader):
+    dataset_project = {"train": "train",
+                        "validation": "dev",
+                        "test": "test"
+                        }
     def __init__(self, tokenizer=None, n_prompt_tokens=50):
         super().__init__()
         if tokenizer is None:
@@ -44,10 +52,31 @@ class SST2Loader(Loader):
             example['input_text'] = '%s . It was %s .' % (example['sentence'], self.tokenizer.mask_token)
             example['target_text'] = self.label2text[example['label']]
         return example
+    
+    def get_examples(self, data_dir, split):
+        path = os.path.join(data_dir, f"{split}.tsv")
+        examples = []
+        with open(path, encoding='utf-8')as f:
+            lines = f.readlines()
+            for idx, line in enumerate(lines[1:]):
+                linelist = line.strip().split('\t')
+                text_a = linelist[0]
+                label = linelist[1]
+                guid = "%s-%s" % (split, idx)
+                example = {
+                    "guid": guid,
+                    "sentence": text_a,
+                    "label": int(label)
+                }
+                # example = InputExample(guid=guid, text_a=text_a, label=self.get_label_id(label))
+                examples.append(example)
+        return examples
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('glue', 'sst2', split=split)
+        # dataset = datasets.load_dataset('./glue', 'sst2', split=split)
+        dataset = self.get_examples("../data/glue_data/SST-2", self.dataset_project[split])
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print('Example in {} set:'.format(split))
         print(dataset[0])
@@ -74,6 +103,10 @@ class SST2Loader(Loader):
 
 
 class YelpPLoader(Loader):
+    dataset_project = {"train": "train",
+                        "validation": None,
+                        "test": "test"
+                        }
     def __init__(self, tokenizer=None, n_prompt_tokens=50):
         super().__init__()
         if tokenizer is None:
@@ -84,6 +117,10 @@ class YelpPLoader(Loader):
         self.label2text = {
             0: "bad",
             1: "great",
+        }
+        self.tag2label = {
+            "1": 0,
+            "2": 1
         }
 
     def convert_examples(self, example):
@@ -96,10 +133,29 @@ class YelpPLoader(Loader):
             example['input_text'] = '%s . It was %s .' % (example['text'].replace("\\n", " "), self.tokenizer.mask_token)
             example['target_text'] = self.label2text[example['label']]
         return example
+    
+    def get_examples(self, data_dir, split):
+        path = os.path.join(data_dir, "{}.csv".format(self.dataset_project[split]))
+        df = pd.read_csv(path, header=None)
+        examples = []
+        for idx, (label, text) in enumerate(zip(df[0], df[1])):
+            text_a = text
+            label = str(label)
+            example = {
+                "guid": str(idx),
+                "text": text_a,
+                "label": self.tag2label[label]
+            }
+            # example = InputExample(
+            #         guid=str(idx), text_a=text_a, text_b="", label=label)
+            examples.append(example)
+        return examples
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('yelp_polarity', 'plain_text', split=split)
+        # dataset = datasets.load_dataset('yelp_polarity', 'plain_text', split=split)
+        dataset = self.get_examples("../data/Yelp", self.dataset_project[split])
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print(dataset[0])
         dataset = dataset.map(partial(convert_to_features, tokenizer=self.tokenizer), batched=True, load_from_cache_file=False)
@@ -149,10 +205,31 @@ class AGNewsLoader(Loader):
             example['input_text'] = '%s News: %s' % (self.tokenizer.mask_token, example['text'])
             example['target_text'] = self.label2text[example['label']]
         return example
+    
+    def get_examples(self, data_dir, split):
+        path = os.path.join(data_dir, "{}.csv".format(split))
+        examples = []
+        with open(path, encoding='utf8') as f:
+            reader = csv.reader(f, delimiter=',')
+            for idx, row in enumerate(reader):
+                label, headline, body = row
+                text_a = headline.replace('\\', ' ')
+                text_b = body.replace('\\', ' ')
+                example = {
+                    "guid": str(idx),
+                    "text": text_b,
+                    "title": text_a,
+                    "label": int(label) - 1
+                }
+                # example = InputExample(guid=str(idx), text_a=text_a, text_b=text_b, label=int(label)-1)
+                examples.append(example)
+        return examples
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('ag_news', 'default', split=split)
+        # dataset = datasets.load_dataset('ag_news', 'default', split=split)
+        dataset = self.get_examples("../data/TextClassification/agnews", split)
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print(dataset[0])
         dataset = dataset.map(partial(convert_to_features, tokenizer=self.tokenizer), batched=True, load_from_cache_file=False)
@@ -212,10 +289,32 @@ class DBPediaLoader(Loader):
             example['input_text'] = '[ Category: %s ] %s' % (self.tokenizer.mask_token, example['content'].strip())
             example['target_text'] = self.label2text[example['label']]
         return example
+    
+    def get_examples(self, data_dir, split):
+        examples = []
+        label_file  = open(os.path.join(data_dir,"{}_labels.txt".format(split)),'r')
+        labels  = [int(x.strip()) for x in label_file.readlines()]
+        with open(os.path.join(data_dir,'{}.txt'.format(split)),'r') as fin:
+            for idx, line in enumerate(fin):
+                splited = line.strip().split(". ")
+                text_a, text_b = splited[0], splited[1:]
+                text_a = text_a+"."
+                text_b = ". ".join(text_b)
+                example = {
+                    "guid": str(idx),
+                    "title": text_a,
+                    "content": text_b,
+                    "label": int(labels[idx])
+                }
+                # example = InputExample(guid=str(idx), text_a=text_a, text_b=text_b, label=int(labels[idx]))
+                examples.append(example)
+        return examples
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('dbpedia_14', split=split)
+        # dataset = datasets.load_dataset('dbpedia_14', split=split)
+        dataset = self.get_examples("../data/TextClassification/dbpedia", split)
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print(dataset[0])
         dataset = dataset.map(partial(convert_to_features, tokenizer=self.tokenizer), batched=True, load_from_cache_file=False)
@@ -241,6 +340,10 @@ class DBPediaLoader(Loader):
 
 
 class MRPCLoader(Loader):
+    dataset_project = {"train": "msr_paraphrase_train",
+                        "validation": "msr_paraphrase_test",
+                        "test": "msr_paraphrase_test"
+                        }
     def __init__(self, tokenizer=None, n_prompt_tokens=50):
         super().__init__()
         if tokenizer is None:
@@ -263,10 +366,31 @@ class MRPCLoader(Loader):
             example['input_text'] = '%s ? %s , %s' % (example['sentence1'], self.tokenizer.mask_token, example['sentence2'])
             example['target_text'] = self.label2text[example['label']]
         return example
+    
+    def get_examples(self, data_dir, split):
+        path = os.path.join(data_dir, "{}.txt".format(self.dataset_project[split]))
+        examples = []
+        with open(path)as f:
+            lines = f.readlines()
+            for idx, line in enumerate(lines[1:]):
+                line_list = line.strip().split('\t')
+                text_a = line_list[-2]
+                text_b = line_list[-1]
+                label = int(line_list[0])
+                example = {
+                    "guid": str(idx),
+                    "sentence1": text_a, 
+                    "sentence2": text_b,
+                    "label": label
+                }
+                examples.append(example)
+        return examples
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('glue', 'mrpc', split=split)
+        # dataset = datasets.load_dataset('./glue', 'mrpc', split=split)
+        dataset = self.get_examples("../data/glue_data/MRPC", split)
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print(dataset[0])
         dataset = dataset.map(partial(convert_to_features, tokenizer=self.tokenizer), batched=True, load_from_cache_file=False)
@@ -292,6 +416,10 @@ class MRPCLoader(Loader):
 
 
 class RTELoader(Loader):
+    dataset_project = {"train": "train",
+                        "validation": "dev",
+                        "test": "test"
+                        }
     def __init__(self, tokenizer=None, n_prompt_tokens=50):
         super().__init__()
         if tokenizer is None:
@@ -303,6 +431,29 @@ class RTELoader(Loader):
             0: "Yes",
             1: "No",
         }
+        self.tag2label = {
+            "entailment": 0,
+            "not_entailment": 1
+        }
+    
+    def get_examples(self, data_dir, split):
+        path = os.path.join(data_dir, "{}.tsv".format(self.dataset_project[split]))
+        examples = []
+        with open(path)as f:
+            lines = f.readlines()
+            for idx, line in enumerate(lines[1:]):
+                line_list = line.strip().split('\t')
+                text_a = line_list[-3]
+                text_b = line_list[-2]
+                label = self.tag2label[line_list[-1]]
+                example = {
+                    "guid": str(idx),
+                    "sentence1": text_a,
+                    "sentence2": text_b,
+                    "label": label
+                }
+                examples.append(example)
+        return examples
 
     def convert_examples(self, example):
         if self.n_prompt_tokens > 0:  # use randomly selected words as initial prompt
@@ -317,7 +468,9 @@ class RTELoader(Loader):
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('glue', 'rte', split=split)
+        # dataset = datasets.load_dataset('./glue', 'rte', split=split)
+        dataset = self.get_examples("../data/glue_data/RTE" ,split=split)
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print(dataset[0])
         dataset = dataset.map(partial(convert_to_features, tokenizer=self.tokenizer), batched=True, load_from_cache_file=False)
@@ -344,6 +497,10 @@ class RTELoader(Loader):
 
 
 class SNLILoader(Loader):
+    dataset_project = {"train": "snli_1.0_train",
+                        "dev": "snli_1.0_dev",
+                        "test": "snli_1.0_test"
+                        }
     def __init__(self, tokenizer=None, n_prompt_tokens=50):
         super().__init__()
         if tokenizer is None:
@@ -356,6 +513,32 @@ class SNLILoader(Loader):
             1: "Maybe",
             2: "No",
         }
+        self.tag2label = {
+            "entailment": 0,
+            "neutral": 1,
+            "contradiction": 2
+        }
+    
+    def get_examples(self, data_dir, split):
+        path = os.path.join(data_dir, "{}.jsonl".format(self.dataset_project[split]))
+        examples = []
+        with open(path)as f:
+            lines = f.readlines()
+            for idx, line in enumerate(lines):
+                data = json.loads(line)
+                text_a = data["sentence1"]
+                text_b = data["sentence2"]
+                if data["gold_label"] not in self.tag2label:
+                    continue
+                label = self.tag2label[data["gold_label"]]
+                example = {
+                    "guid": str(idx),
+                    "premise": text_a,
+                    "hypothesis": text_b,
+                    "label": label
+                }
+                examples.append(example)
+        return examples
 
     def convert_examples(self, example):
         if self.n_prompt_tokens > 0:  # use randomly selected words as initial prompt
@@ -370,7 +553,9 @@ class SNLILoader(Loader):
 
     def _load(self, split) -> DataSet:
         # load dataset with Huggingface's Datasets
-        dataset = datasets.load_dataset('snli', split=split)
+        dataset = self.get_examples("../data/SNLI", split=split)
+        dataset = datasets.Dataset.from_pandas(pd.DataFrame(data=dataset))
+        # dataset = datasets.load_dataset('snli', split=split)
         dataset = dataset.filter(lambda example: example['label'] in [0, 1, 2])
         dataset = dataset.map(self.convert_examples, load_from_cache_file=False)
         print(dataset[0])
